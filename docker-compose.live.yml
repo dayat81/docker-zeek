@@ -1,50 +1,73 @@
 version: "3"
 services:
   elasticsearch:
-    image: blacktop/elasticsearch:x-pack-7.4.0
+    image: blacktop/elasticsearch:x-pack-7.7.1
     environment:
       - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
     ports:
       - "9200:9200"
     networks:
       - elastinet
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9200"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
 
   kibana:
     depends_on:
       - elasticsearch
-    image: blacktop/kibana:x-pack-7.4.0
+    image: blacktop/kibana:x-pack-7.7.1
     environment:
       - xpack.reporting.enabled=false
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
     ports:
       - "5601:5601"
-    links:
-      - elasticsearch
     networks:
       - elastinet
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5601/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
 
   filebeat:
     depends_on:
-      - kibana
-    image: blacktop/filebeat:7.4.0
-    links:
-      - kibana
       - elasticsearch
+      - kibana
+    image: blacktop/filebeat:7.7.1
     volumes:
       - ./pcap:/pcap
-    command: -e
+      - ./filebeat-config/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
     networks:
       - elastinet
+    restart: on-failure
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - KIBANA_HOST=kibana:5601
+    # The standard command for this image with our custom config
+    command: -e -strict.perms=false
 
+  # For live traffic monitoring, we can use two Zeek services:
+  # One for traffic capture and one for log processing
   zeek:
     depends_on:
-      - filebeat
-    build: ./elastic
+      - elasticsearch
     image: blacktop/zeek:elastic
     volumes:
       - ./pcap:/pcap
+      - ./local_zeek:/usr/local/zeek/share/zeek/site
+    # Enable NET_RAW for packet capture
     cap_add:
       - NET_RAW
+      - NET_ADMIN
+    # Use host networking for network interface access
     network_mode: "host"
-    command: -i af_packet::eth0 local
+    # Monitor live traffic on eth1 with JSON logging enabled
+    command: -i eth1 local "LogAscii::use_json=T"
 
-networks: elastinet:
+networks: 
+  elastinet:
+    driver: bridge
